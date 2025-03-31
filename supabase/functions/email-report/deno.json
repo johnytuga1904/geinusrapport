@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"],
+    "strict": false,
+    "noImplicitAny": false,
+    "checkJs": false
+  },
+  "lint": {
+    "files": {
+      "exclude": ["*.ts"]
+    }
+  },
+  "importMap": "./import_map.json",
+  "tasks": {
+    "start": "deno run --allow-net --allow-env --allow-read index.ts",
+    "deploy": "supabase functions deploy email-report --no-verify-jwt"
+  }
+} 

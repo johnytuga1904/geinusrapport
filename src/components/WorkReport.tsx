@@ -18,11 +18,12 @@ import DateRangePicker from "./DateRangePicker";
 import ObjectAutocomplete from "./ObjectAutocomplete";
 import LocationAutocomplete from "./LocationAutocomplete";
 import { Edit, Trash2, CalendarIcon, MessageSquare, FileText, Download, Save } from "lucide-react";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { emailService } from "@/services/emailService";
 import { supabase } from "@/lib/supabase";
+import { toast } from "sonner";
 
 // Fallback für toast, falls sonner nicht verfügbar ist
 const showNotification = (message: string, type: 'success' | 'error' | 'info') => {
@@ -310,17 +311,43 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
       newEntry.expenseAmount > 0 ||
       newEntry.notes
     ) {
-      setEntries((prev) => [...prev, { ...newEntry }]);
+      // Finde den richtigen Index basierend auf dem Datum
+      const insertIndex = entries.findIndex(entry => 
+        new Date(entry.date) > new Date(newEntry.date)
+      );
+      
+      // Wenn kein passender Index gefunden wurde, füge am Ende ein
+      const finalIndex = insertIndex === -1 ? entries.length : insertIndex;
+      
+      // Erstelle eine neue Liste mit dem Eintrag an der richtigen Position
+      const newEntries = [...entries];
+      newEntries.splice(finalIndex, 0, { ...newEntry });
+      
+      setEntries(newEntries);
       setNewEntry({ ...emptyEntry });
     }
-  }, [newEntry]);
+  }, [newEntry, entries]);
 
   const handleEditEntry = useCallback(
     (index: number, entryToEdit: WorkEntry) => {
-      setNewEntry({ ...entryToEdit });
-      setEntries((prev) => prev.filter((_, i) => i !== index));
+      // Entferne den Eintrag aus der Liste
+      const updatedEntries = entries.filter((_, i) => i !== index);
+      
+      // Finde den richtigen Index basierend auf dem Datum
+      const insertIndex = updatedEntries.findIndex(entry => 
+        new Date(entry.date) > new Date(entryToEdit.date)
+      );
+      
+      // Wenn kein passender Index gefunden wurde, füge am Ende ein
+      const finalIndex = insertIndex === -1 ? updatedEntries.length : insertIndex;
+      
+      // Füge den bearbeiteten Eintrag an der richtigen Position ein
+      updatedEntries.splice(finalIndex, 0, entryToEdit);
+      
+      setEntries(updatedEntries);
+      setNewEntry({ ...emptyEntry });
     },
-    [],
+    [entries],
   );
 
   const handleDeleteEntry = useCallback((index: number) => {
@@ -381,8 +408,13 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
   // CSV-Export-Funktion
   const exportToCSV = async () => {
     try {
-      // CSV-Header
-      let csvContent = "Datum,Auftrag Nr.,Objekt oder Strasse,Ort,Std.,Absenzen,Überstd.,Auslagen und Bemerkungen,Auslagen Fr.,Notizen\n";
+      // CSV-Header mit Berichtsinformationen
+      let csvContent = "Arbeitsrapport\n";
+      csvContent += `Name: ${name}\n`;
+      csvContent += `Zeitraum: ${period}\n\n`;
+      
+      // CSV-Header für die Tabelle
+      csvContent += "Datum,Auftrag Nr.,Objekt oder Strasse,Ort,Std.,Absenzen,Überstd.,Auslagen und Bemerkungen,Auslagen Fr.,Notizen\n";
       
       // CSV-Daten aus Einträgen
       entries.forEach(entry => {
@@ -427,7 +459,7 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
         user_id: user.id,
         name: name + " (CSV-Export)",
         period: period,
-        date: currentDate, // Hinzufügen des date-Felds
+        date: currentDate,
         content: JSON.stringify({
           csv_content: csvContent,
           entries: entries,
@@ -479,6 +511,7 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
   const [savedReports, setSavedReports] = useState<any[]>([]);
   const [isLoadingReports, setIsLoadingReports] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
 
   // Lade gespeicherte Berichte für den Dialog
   const loadSavedReports = async () => {
@@ -566,137 +599,133 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
 
   // Sende den Bericht per E-Mail
   const sendReportByEmail = async () => {
-    if (!selectedReportId || !recipientEmail) {
-      showNotification("Bitte wählen Sie einen Bericht und geben Sie eine E-Mail-Adresse ein", 'error');
+    // Validierung
+    if (!selectedReportId) {
+      toast.error('Bitte wählen Sie einen Bericht aus');
+      return;
+    }
+
+    if (!recipientEmail) {
+      toast.error('Bitte geben Sie eine E-Mail-Adresse ein');
       return;
     }
 
     setIsLoading(true);
+    setEmailSent(false);
 
     try {
-      // Finde den ausgewählten Bericht
+      // Ausgewählten Bericht finden
       const selectedReport = savedReports.find(report => report.id === selectedReportId);
       if (!selectedReport) {
-        showNotification("Der ausgewählte Bericht wurde nicht gefunden", 'error');
-        setIsLoading(false);
-        return;
+        throw new Error('Ausgewählter Bericht wurde nicht gefunden');
       }
 
-      console.log("Ausgewählter Bericht:", selectedReport);
-
-      // Generiere CSV-Inhalt
+      // CSV generieren
       const csvContent = generateCSVContent(selectedReport);
-      console.log("CSV-Inhalt generiert, Länge:", csvContent.length);
+      console.log(`CSV-Datei generiert mit Länge: ${csvContent.length}`);
+
+      // Dateinamen erstellen
+      const filename = `Arbeitsrapport_${selectedReport.name.replace(/\s+/g, '_')}_${selectedReport.period.replace(/\s+/g, '_')}.csv`;
+      console.log(`Dateiname: ${filename}`);
+
+      // Temporär: Datei direkt herunterladen und E-Mail-Dialog anzeigen
+      toast.info('Die Edge-Funktion für E-Mail ist zurzeit nicht verfügbar. Bericht wird als Datei heruntergeladen.');
       
-      // Erstelle den Dateinamen
-      const fileName = `Arbeitsrapport_${selectedReport.name.replace(/\s+/g, '_')}_${selectedReport.period.replace(/\s+/g, '_')}.csv`;
-      console.log("Dateiname:", fileName);
+      // BOM für Excel-Kompatibilität hinzufügen und als Uint8Array vorbereiten
+      const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+      const csvContentBytes = new TextEncoder().encode(csvContent);
+      const fileContent = new Uint8Array([...bom, ...csvContentBytes]);
       
-      // Hole den aktuellen Benutzer
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        showNotification("Sie müssen angemeldet sein, um E-Mails zu senden", 'error');
-        setIsLoading(false);
-        return;
+      // Datei herunterladen
+      await downloadFile(fileContent, filename, 'text/csv;charset=utf-8');
+      
+      // E-Mail-Client-Öffnen-Dialog anzeigen
+      const confirmed = window.confirm(
+        `Der Bericht wurde als Datei heruntergeladen.\n\nMöchten Sie Ihr E-Mail-Programm öffnen, um die Datei an ${recipientEmail} zu senden?`
+      );
+      
+      if (confirmed) {
+        // E-Mail-Client mit Mailto-Link öffnen
+        const emailSubject = `Arbeitsrapport ${selectedReport.name} (${selectedReport.period})`;
+        const emailBody = 
+          `Anbei finden Sie den Arbeitsrapport für ${selectedReport.name} für den Zeitraum ${selectedReport.period}.\n\n` +
+          `Bitte fügen Sie die heruntergeladene CSV-Datei als Anhang hinzu.`;
+        
+        const mailtoLink = `mailto:${recipientEmail}?subject=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(emailBody)}`;
+        window.open(mailtoLink, '_blank');
       }
       
-      // NEUE METHODE: Erstelle einen FormData-Anhang
-      // Erstelle einen Blob aus dem CSV-Inhalt
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      
-      // Erstelle FormData für den Anhang
-      const formData = new FormData();
-      formData.append('to', recipientEmail);
-      formData.append('subject', `Arbeitsrapport: ${selectedReport.name} - ${selectedReport.period}`);
-      formData.append('text', `Arbeitsrapport: ${selectedReport.name}\nZeitraum: ${selectedReport.period}\n\nDer detaillierte Bericht ist als CSV-Datei angehängt.`);
-      formData.append('userId', user.id);
-      formData.append('file', blob, fileName);
-      
-      console.log("FormData erstellt mit Anhang");
-      
-      // Hole die URL der Edge-Funktion
-      const functionUrl = await getFunctionUrl('send-email-with-attachment');
-      console.log("Edge-Funktions-URL:", functionUrl);
-      
-      // Sende die Anfrage mit FormData
-      const response = await fetch(functionUrl, {
-        method: 'POST',
-        body: formData,
-      });
-      
-      const data = await response.json();
-      console.log("Server Response:", data);
-      
-      if (!response.ok) {
-        console.error("Fehler beim Senden der E-Mail mit Anhang:", data.error);
-        showNotification(`Fehler beim Senden der E-Mail: ${data.error}`, 'error');
-        
-        // Fallback: Lade die Datei herunter, wenn der E-Mail-Versand fehlschlägt
+      setEmailSent(true);
+      setRecipientEmail('');
+      setIsLoading(false);
+    } catch (error: any) {
+      console.error('Fehler beim Vorbereiten der E-Mail:', error);
+      toast.error(`Fehler: ${error.message}`);
+      setIsLoading(false);
+    }
+  };
+
+  // Hilfsfunktion zum Konvertieren von Blob zu Base64
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result);
+      };
+      reader.onerror = (error) => reject(error);
+      reader.readAsDataURL(blob);
+    });
+  };
+  
+  // Hilfsfunktion zum Herunterladen einer Datei
+  const downloadFile = async (content: Uint8Array, fileName: string, contentType: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      try {
+        const blob = new Blob([content], { type: contentType });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
         link.setAttribute('download', fileName);
         document.body.appendChild(link);
         link.click();
-        URL.revokeObjectURL(url);
-        document.body.removeChild(link);
         
-        showNotification("Der Bericht wurde als Datei heruntergeladen", 'success');
-        setIsLoading(false);
-        return;
+        // Kurze Verzögerung, um sicherzustellen, dass der Download startet
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+          document.body.removeChild(link);
+          showNotification("Der Bericht wurde als Datei heruntergeladen", 'success');
+          resolve();
+        }, 100);
+      } catch (error) {
+        console.error("Fehler beim Herunterladen der Datei:", error);
+        showNotification("Fehler beim Herunterladen der Datei", 'error');
+        reject(error);
       }
-      
-      console.log("E-Mail erfolgreich gesendet");
-      showNotification("E-Mail erfolgreich gesendet", 'success');
-      setEmailDialogOpen(false);
-      setRecipientEmail('');
-      setSelectedReportId('');
-      setExportFormat('csv');
-    } catch (error) {
-      console.error("Fehler beim Senden des Berichts per E-Mail:", error);
-      showNotification(`Fehler beim Senden des Berichts: ${error.message || "Unbekannter Fehler"}`, 'error');
-    } finally {
-      setIsLoading(false);
-    }
+    });
   };
   
-  // Hilfsfunktion zum Abrufen der Edge-Funktions-URL
-  const getFunctionUrl = async (functionName: string): Promise<string> => {
+  // Hilfsfunktion für den Fallback-Download
+  const tryDownloadFallback = (reportId: string | null, reports: any[]) => {
     try {
-      // Versuche zuerst, die URL über die get-function-url Edge-Funktion zu holen
-      const { data, error } = await supabase.functions.invoke('get-function-url', {
-        body: { functionName }
-      });
-      
-      if (error) {
-        console.error("Fehler beim Abrufen der Funktions-URL:", error);
-        throw new Error(`Fehler beim Abrufen der Funktions-URL: ${error.message}`);
+      if (reportId) {
+        const report = reports.find(r => r.id === reportId);
+        if (report) {
+          // Generiere den CSV-Inhalt neu für den Download
+          const fallbackCsvContent = generateCSVContent(report);
+          const fallbackFilename = `Arbeitsrapport_${report.name.replace(/\s+/g, '_')}_${report.period.replace(/\s+/g, '_')}.csv`;
+          
+          // Erstelle die Datei und lade sie herunter
+          downloadFile(
+            new Uint8Array([...new Uint8Array([0xEF, 0xBB, 0xBF]), ...new TextEncoder().encode(fallbackCsvContent)]),
+            fallbackFilename, 
+            'text/csv;charset=utf-8'
+          );
+          toast.info('Bericht wurde stattdessen als Datei heruntergeladen');
+        }
       }
-      
-      if (data && data.url) {
-        return data.url;
-      }
-      
-      // Fallback: Konstruiere die URL basierend auf der Supabase-URL
-      const { data: { session } } = await supabase.auth.getSession();
-      const projectRef = session?.access_token ? JSON.parse(atob(session.access_token.split('.')[1])).iss.split('/')[3] : null;
-      
-      if (!projectRef) {
-        throw new Error("Projekt-Referenz konnte nicht ermittelt werden");
-      }
-      
-      return `https://${projectRef}.supabase.co/functions/v1/${functionName}`;
-    } catch (error) {
-      console.error("Fehler beim Abrufen der Funktions-URL:", error);
-      // Fallback: Verwende die Supabase-URL aus der Umgebungsvariable
-      const supabaseUrl = process.env.REACT_APP_SUPABASE_URL || '';
-      const projectRef = supabaseUrl.match(/https:\/\/(.*?)\.supabase\.co/)?.[1];
-      
-      if (!projectRef) {
-        throw new Error("Projekt-Referenz konnte nicht ermittelt werden");
-      }
-      
-      return `https://${projectRef}.supabase.co/functions/v1/${functionName}`;
+    } catch (fallbackError) {
+      console.error('Fehler beim Herunterladen des Berichts:', fallbackError);
     }
   };
   
@@ -1048,6 +1077,9 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Bericht per E-Mail senden</DialogTitle>
+            <DialogDescription>
+              Wählen Sie einen gespeicherten Bericht aus, um ihn per E-Mail zu versenden.
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
@@ -1068,6 +1100,9 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
                   </option>
                 ))}
               </select>
+              {isLoadingReports && (
+                <p className="text-sm text-gray-500">Lade Berichte...</p>
+              )}
             </div>
             
             <div className="space-y-2">
@@ -1108,6 +1143,7 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
                 placeholder="beispiel@domain.com"
                 value={recipientEmail}
                 onChange={(e) => setRecipientEmail(e.target.value)}
+                className="w-full"
               />
             </div>
           </div>
@@ -1123,8 +1159,9 @@ const WorkReport: React.FC<WorkReportProps> = ({ report, onDataChange, initialDa
               type="submit"
               onClick={sendReportByEmail}
               disabled={!selectedReportId || !recipientEmail || isLoading}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
             >
-              Senden
+              {isLoading ? "Wird gesendet..." : "Senden"}
             </Button>
           </DialogFooter>
         </DialogContent>

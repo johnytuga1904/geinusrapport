@@ -1,0 +1,8 @@
+{
+  "imports": {
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2",
+    "std/http/server": "https://deno.land/std@0.168.0/http/server.ts",
+    "nodemailer": "npm:nodemailer@6.9.12",
+    "multiparser": "https://deno.land/x/multiparser@0.114.0/mod.ts"
+  }
+} 

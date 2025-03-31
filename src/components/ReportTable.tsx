@@ -15,6 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Pencil, Trash2, AlertCircle, CalendarIcon } from "lucide-react";
@@ -342,6 +343,9 @@ const ReportTable: React.FC<ReportTableProps> = ({
         <DialogContent className="max-w-[90vw] sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Eintrag bearbeiten</DialogTitle>
+            <DialogDescription>
+              Bearbeiten Sie die Details des Eintrags. Klicken Sie auf "Speichern" um die Änderungen zu übernehmen.
+            </DialogDescription>
           </DialogHeader>
           {editedEntry && (
             <div className="grid gap-3 sm:gap-4 py-3 sm:py-4">
