@@ -1,297 +1,243 @@
-/// <reference lib="deno.ns" />
-/// <reference lib="deno.unstable" />
-/// <reference types="@supabase/supabase-js" />
+console.log("---> RUNNING NEW send-email-with-attachment code - v1.3 <---");
 
-// Setup type definitions for built-in Supabase Runtime APIs
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-// @deno-types="npm:@types/nodemailer"
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import nodemailer from "npm:nodemailer@6.9.12";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts"; // Use standard URL import
+import { SmtpClient } from "jsr:@denodrivers/smtp";
+import * as xlsx from "jsr:@libs/xlsx";
+import * as csv from "jsr:@std/csv";
+import { encodeBase64 } from "jsr:@std/encoding/base64";
+import { WorkReportData } from "@/types/reports"; // Adjust path if needed
 
-interface DenoEnv {
-  get(key: string): string | undefined;
-}
-
-declare global {
-  const Deno: {
-    env: DenoEnv;
-    readAll(reader: Deno.Reader): Promise<Uint8Array>;
+// Define expected payload structure (matches client-side)
+interface SmtpConfigPayload {
+  host: string;
+  port: number;
+  secure?: boolean; // Handled by SmtpClient based on port typically
+  auth: {
+    user: string;
+    pass: string;
   };
 }
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Max-Age": "86400",
-};
-
-// Interface für die JSON-Anfrage
-interface EmailRequest {
+interface FunctionPayload {
   to: string;
   subject: string;
   text: string;
-  userId: string;
-  filename: string;
-  fileContent: string; // Base64-codierter Dateiinhalt
-  contentType: string;
+  smtpConfig: SmtpConfigPayload;
+  reportData: WorkReportData;
+  format: 'excel' | 'pdf' | 'csv';
 }
 
-interface EmailAttachment {
-  filename: string;
-  content: Uint8Array | Buffer;
-  contentType: string;
-}
+console.log("Send Email with Attachment Function Initializing...");
 
-// Diese Edge-Funktion verarbeitet ausschließlich JSON!
-// Sie verwendet KEINE FormData mehr!
 serve(async (req: Request) => {
-  console.log("Edge-Funktion aufgerufen - NUR JSON Verarbeitung");
+  // --- CORS Headers (for all responses) ---
+  // Use wildcard for origin to allow requests from any domain
+  console.log(`Request received with headers: ${JSON.stringify(Object.fromEntries(req.headers.entries()))}`);
   
-  // CORS preflight requests
-  if (req.method === "OPTIONS") {
-    console.log("CORS Preflight-Anfrage bearbeitet");
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Content-Type': 'application/json'
+  };
+
+  // --- CORS Preflight Handling ---
+  if (req.method === 'OPTIONS') {
+    console.log("Handling OPTIONS request");
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // Überprüfe den Content-Type Header
-    const contentType = req.headers.get('Content-Type');
-    console.log("Content-Type:", contentType);
+    console.log(`Request headers: ${JSON.stringify(Object.fromEntries(req.headers.entries()))}`);
     
-    if (contentType !== 'application/json') {
-      console.error("Ungültiger Content-Type:", contentType);
-      return new Response(
-        JSON.stringify({ error: "Content-Type muss 'application/json' sein" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
+    // Log request details for debugging
+    console.log(`Request URL: ${req.url}`);
+    console.log(`Request method: ${req.method}`);
+    console.log(`Request mode: ${req.mode}`);
+    console.log(`Request credentials: ${req.credentials}`);
+    
+    console.log(`[${new Date().toISOString()}] Received ${req.method} request`);
+
+    if (req.method !== 'POST') {
+      throw new Error("Method not allowed. Only POST is accepted.");
     }
 
-    // Überprüfe den Authorization-Header
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      console.error("Fehlender Authorization-Header");
-      return new Response(
-        JSON.stringify({ error: "Fehlender Authorization-Header" }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
+    if (!req.body) {
+      throw new Error("Request body is missing.");
     }
 
-    // Extrahiere den Bearer Token
-    const token = authHeader.replace('Bearer ', '');
-    if (!token) {
-      console.error("Ungültiger Authorization-Header");
-      return new Response(
-        JSON.stringify({ error: "Ungültiger Authorization-Header" }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
-    }
+    // --- Parse Payload ---
+    const payload: FunctionPayload = await req.json();
+    console.log(`[${new Date().toISOString()}] Payload parsed successfully. Format: ${payload.format}`);
 
-    // Parse JSON-Anfrage
-    console.log("Versuche, JSON-Daten zu parsen...");
-    
-    const reqText = await req.text();
-    console.log("Roher Request-Body:", reqText.substring(0, 100) + "...");
-    
-    let requestData: EmailRequest;
-    try {
-      requestData = JSON.parse(reqText) as EmailRequest;
-    } catch (parseError) {
-      console.error("JSON-Parse-Fehler:", parseError);
-      return new Response(
-        JSON.stringify({ error: "Fehler beim Parsen der JSON-Daten: " + (parseError as Error).message }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
+    const { to, subject, text, smtpConfig, reportData, format } = payload;
+
+    // --- Input Validation (Basic) ---
+    if (!to || !smtpConfig || !reportData || !format) {
+      throw new Error("Missing required fields in payload.");
+    }
+    if (!smtpConfig.host || !smtpConfig.port || !smtpConfig.auth?.user || !smtpConfig.auth?.pass) {
+      throw new Error("Incomplete SMTP configuration.");
     }
     
-    console.log("JSON-Daten erfolgreich geparst");
-    console.log("Empfangene JSON-Daten:", {
-      to: requestData.to,
-      subject: requestData.subject,
-      userId: requestData.userId,
-      filename: requestData.filename,
-      contentType: requestData.contentType,
-      fileContentLength: requestData.fileContent ? requestData.fileContent.length : 0
-    });
+    // Ensure we have valid values for subject and text
+    const safeSubject = subject || `Arbeitsrapport ${reportData.employeeName || 'Mitarbeiter'} - ${reportData.month || 'Monat'}/${reportData.year || 'Jahr'}`;
+    const safeText = text || `Arbeitsrapport für ${reportData.month || 'Monat'}/${reportData.year || 'Jahr'}`;
+    
+    // Ensure reportData has valid values
+    reportData.employeeName = reportData.employeeName || 'Mitarbeiter';
+    reportData.month = reportData.month || 'Monat';
+    reportData.year = reportData.year || 'Jahr';
+    reportData.client = reportData.client || 'Kunde';
+    reportData.totalHours = reportData.totalHours || reportData.entries.reduce((sum, entry) => sum + (entry.hours || 0), 0);
 
-    // Überprüfe ob alle benötigten Felder vorhanden sind
-    if (!requestData.userId) {
-      console.error("Fehlende Benutzer-ID");
-      return new Response(
-        JSON.stringify({ error: "Benutzer-ID ist erforderlich" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
-    }
+    // --- Generate Attachment ---
+    let attachmentContent: string; // Base64 encoded content
+    let attachmentFilename: string;
+    let contentType: string;
 
-    if (!requestData.fileContent) {
-      console.error("Keine Datei gefunden");
-      return new Response(
-        JSON.stringify({ error: "Keine Datei gefunden" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
-    }
+    const filenameBase = `Arbeitsrapport_${reportData.employeeName}_${reportData.month}-${reportData.year}`.replace(/\s+/g, '_');
 
-    // Decodiere Base64-Dateiinhalt
-    let fileContent: Uint8Array;
-    try {
-      console.log("Decodiere Base64-Dateiinhalt...");
-      const base64Data = requestData.fileContent.replace(/^data:.*;base64,/, '');
-      fileContent = new Uint8Array(Array.from(atob(base64Data), c => c.charCodeAt(0)));
-      
-      console.log("Dateiinhalt erfolgreich verarbeitet:", {
-        size: fileContent.length,
-        firstBytes: fileContent.length > 0 ? 
-          Array.from(fileContent.slice(0, 10)).map(b => b.toString(16).padStart(2, '0')).join(' ') :
-          'leer'
+    if (format === 'excel') {
+      console.log(`[${new Date().toISOString()}] Generating Excel report...`);
+      const wb = xlsx.utils.book_new();
+      const wsData = [
+        ["Client:", reportData.client],
+        ["Mitarbeiter:", reportData.employeeName],
+        ["Monat/Jahr:", `${reportData.month}/${reportData.year}`],
+        [], // Empty row
+        ["Datum", "Projekt", "Tätigkeit", "Stunden"]
+      ];
+      reportData.entries.forEach(entry => {
+        wsData.push([
+          entry.date,
+          entry.project || 'N/A',
+          entry.description,
+          entry.hours?.toString() ?? '0'
+        ]);
       });
-    } catch (error) {
-      console.error("Fehler beim Decodieren des Dateiinhalts:", error);
-      return new Response(
-        JSON.stringify({ error: `Fehler beim Decodieren des Dateiinhalts: ${error instanceof Error ? error.message : 'Unbekannter Fehler'}` }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
+      wsData.push([]); // Empty row
+      wsData.push(["Gesamtstunden:", reportData.totalHours?.toFixed(2) ?? '0.00']);
+
+      const ws = xlsx.utils.aoa_to_sheet(wsData);
+      xlsx.utils.book_append_sheet(wb, ws, "Arbeitsrapport");
+
+      // Write to buffer (Uint8Array) and encode
+      const excelBuffer = xlsx.write(wb, { bookType: 'xlsx', type: 'buffer' }) as Uint8Array;
+      attachmentContent = encodeBase64(excelBuffer);
+      attachmentFilename = `${filenameBase}.xlsx`;
+      contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      console.log(`[${new Date().toISOString()}] Excel report generated and encoded.`);
+
+    } else if (format === 'csv') {
+      console.log(`[${new Date().toISOString()}] Generating CSV report...`);
+      const csvHeader = ["Datum", "Projekt", "Tätigkeit", "Stunden"];
+      const csvRows = reportData.entries.map(entry => ({
+        Datum: entry.date,
+        Projekt: entry.project || 'N/A',
+        Tätigkeit: entry.description,
+        Stunden: entry.hours?.toString() ?? '0'
+      }));
+
+      const csvString = await csv.stringify(csvRows, { headers: true, columns: csvHeader });
+      // Encode CSV string to Base64
+      attachmentContent = encodeBase64(new TextEncoder().encode(csvString));
+      attachmentFilename = `${filenameBase}.csv`;
+      contentType = 'text/csv';
+      console.log(`[${new Date().toISOString()}] CSV report generated and encoded.`);
+
+    } else if (format === 'pdf') {
+      console.error("PDF generation is not supported in this function version.");
+      throw new Error("PDF format is currently not supported.");
+    } else {
+      throw new Error(`Unsupported format: ${format}`);
     }
 
-    // Supabase Client für SMTP-Config
-    console.log("Erstelle Supabase Client für SMTP-Config...");
-    const supabaseClient = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
-    );
+    // --- Configure SMTP Client ---
+    const client = new SmtpClient();
+    console.log(`[${new Date().toISOString()}] Connecting to SMTP: ${smtpConfig.host}:${smtpConfig.port}`);
 
-    // SMTP-Einstellungen abrufen
-    console.log("Rufe SMTP-Konfiguration ab für Benutzer-ID:", requestData.userId);
-    const { data: smtpConfig, error: smtpError } = await supabaseClient
-      .from("smtp_config")
-      .select("*")
-      .eq("user_id", requestData.userId)
-      .single();
-
-    if (smtpError || !smtpConfig) {
-      console.error("SMTP-Konfiguration nicht gefunden:", smtpError);
-      return new Response(
-        JSON.stringify({ 
-          error: "SMTP-Konfiguration nicht gefunden.",
-          details: smtpError?.message 
-        }),
-        {
-          status: 404,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
-    }
-
-    console.log("SMTP-Konfiguration geladen:", { 
-      host: smtpConfig.host, 
+    const connectConfig = {
+      hostname: smtpConfig.host,
       port: smtpConfig.port,
-      user: smtpConfig.username ? '***' : undefined, 
-      fromEmail: smtpConfig.from_email
-    });
-
-    // E-Mail-Transporter erstellen
-    console.log("Erstelle E-Mail-Transporter...");
-    const transporter = nodemailer.createTransport({
-      host: smtpConfig.host,
-      port: smtpConfig.port,
-      secure: smtpConfig.secure,
-      auth: {
-        user: smtpConfig.username,
-        pass: smtpConfig.password,
-      },
-    });
-
-    // E-Mail mit Anhang senden
-    const mailOptions = {
-      from: smtpConfig.from_email,
-      to: requestData.to,
-      subject: requestData.subject,
-      text: requestData.text,
-      attachments: [
-        {
-          filename: requestData.filename,
-          content: fileContent,
-          contentType: requestData.contentType || 'text/csv;charset=utf-8'
-        }
-      ],
+      username: smtpConfig.auth.user,
+      password: smtpConfig.auth.pass,
+      // secure/tls might need adjustment based on server requirements
+      // By default, uses STARTTLS on port 587, TLS on 465
     };
 
-    console.log("Sende E-Mail mit Anhang:", {
-      from: mailOptions.from,
-      to: mailOptions.to,
-      subject: mailOptions.subject,
-      attachmentName: mailOptions.attachments[0].filename,
-      attachmentType: mailOptions.attachments[0].contentType,
-      attachmentSize: fileContent.length
+    await client.connect(connectConfig);
+    console.log(`[${new Date().toISOString()}] SMTP connection successful.`);
+
+    // --- Send Email ---
+    console.log(`[${new Date().toISOString()}] Sending email to ${to}...`);
+    const messageId = await client.send({
+      from: smtpConfig.auth.user, // Sender is usually the authenticated user
+      to: to,
+      subject: safeSubject,
+      content: safeText, // Plain text body
+      // HTML content can be added with `html: "\u003cp\u003eHello world\u003c/p\u003e"`
+      attachments: [{
+        filename: attachmentFilename,
+        content: attachmentContent,
+        encoding: 'base64',
+        contentType: contentType,
+      }],
     });
 
-    try {
-      console.log("Rufe sendMail auf...");
-      const info = await transporter.sendMail(mailOptions);
-      console.log("E-Mail erfolgreich gesendet:", info.messageId);
+    await client.close();
+    console.log(`[${new Date().toISOString()}] Email sent successfully. Message ID: ${messageId}`);
 
-      return new Response(
-        JSON.stringify({ 
-          success: true, 
-          messageId: info.messageId,
-          message: "E-Mail erfolgreich gesendet"
-        }),
-        { 
-          headers: { 
-            ...corsHeaders, 
-            "Content-Type": "application/json" 
-          } 
-        }
-      );
-    } catch (sendError: any) {
-      console.error("Fehler beim Senden der E-Mail:", sendError);
-      return new Response(
-        JSON.stringify({ 
-          error: `Fehler beim Senden der E-Mail: ${sendError.message}`,
-          details: sendError.stack
-        }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        }
-      );
-    }
-  } catch (error: unknown) {
-    const err = error as Error;
-    console.error("Allgemeiner Fehler beim Senden der E-Mail:", err);
-    return new Response(
-      JSON.stringify({ 
-        error: err.message,
-        details: err.stack
-      }),
-      {
-        status: 500,
-        headers: { 
-          ...corsHeaders, 
-          "Content-Type": "application/json" 
-        },
-      }
-    );
+    // --- Return Success Response ---
+    const responseBody = JSON.stringify({ success: true, messageId: messageId });
+    return new Response(responseBody, {
+      status: 200,
+      headers: corsHeaders
+    });
+
+  } catch (error) {
+    // --- Error Handling ---
+    console.error(`[${new Date().toISOString()}] Error in send-email function:`, error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    const responseBody = JSON.stringify({
+      success: false,
+      error: errorMessage,
+      details: error instanceof Error ? error.stack : null, // Include stack trace for debugging
+    });
+
+    return new Response(responseBody, {
+      status: 500, // Or 400 for client errors like bad payload
+      headers: corsHeaders
+    });
   }
 });
+
+/* 
+Example FunctionPayload structure expected by this function:
+{
+  "to": "recipient@example.com",
+  "subject": "Work Report - John Doe - 04/2025",
+  "text": "Please find attached the work report.\n\nRegards,\nJohn Doe",
+  "smtpConfig": {
+    "host": "smtp.example.com",
+    "port": 587,
+    "secure": false, // Or true if needed
+    "auth": {
+      "user": "your_email@example.com",
+      "pass": "your_password"
+    }
+  },
+  "reportData": {
+    "client": "Example Corp",
+    "month": 4,
+    "year": 2025,
+    "totalHours": 160.5,
+    "employeeName": "John Doe",
+    "entries": [
+      { "date": "2025-04-01", "project": "Project A", "description": "Development work", "hours": 8 },
+      { "date": "2025-04-02", "project": "Project B", "description": "Meeting", "hours": 1.5 },
+      // ... more entries
+    ]
+  },
+  "format": "excel" // or "csv"
+}
+*/

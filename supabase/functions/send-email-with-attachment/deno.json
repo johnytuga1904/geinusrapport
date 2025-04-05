@@ -1,22 +1,16 @@
 {
+  "imports": {
+    "@supabase/functions-js/": "jsr:@supabase/functions-js@^1.0.0/",
+    "@denodrivers/smtp": "jsr:@denodrivers/smtp@^1.0.0",
+    "@libs/xlsx": "jsr:@libs/xlsx@^0.21.2",
+    "@std/csv": "jsr:@std/csv@^0.224.0",
+    "@std/encoding/base64": "jsr:@std/encoding@^0.224.0/base64",
+    "@/types/reports": "../../src/types/reports.ts",
+    "@/lib/supabase": "../../src/lib/supabase.ts"
+  },
   "compilerOptions": {
-    "allowJs": true,
-    "lib": ["deno.window"],
-    "strict": true
-  },
-  "importMap": "./import_map.json",
-  "tasks": {
-    "start": "deno run --allow-net --allow-env index.ts",
-    "deploy": "supabase functions deploy send-email-with-attachment"
-  },
-  "lint": {
-    "files": {
-      "exclude": ["node_modules/"]
-    }
-  },
-  "fmt": {
-    "files": {
-      "exclude": ["node_modules/"]
-    }
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   }
-} 
+}

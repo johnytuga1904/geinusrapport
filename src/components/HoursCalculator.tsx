@@ -26,6 +26,12 @@ interface HoursCalculatorProps {
     totalAbsence: number,
   ) => void;
   initialEntries?: TimeEntry[];
+  initialValues?: {
+    regularHours: number;
+    overtimeHours: number;
+    absenceHours: number;
+  };
+  hasError?: boolean;
 }
 
 const defaultEntries: TimeEntry[] = [
@@ -39,12 +45,14 @@ const defaultEntries: TimeEntry[] = [
 const HoursCalculator = ({
   onCalculate,
   initialEntries = defaultEntries,
+  initialValues,
+  hasError = false,
 }: HoursCalculatorProps) => {
   const [entries, setEntries] = useState<TimeEntry[]>(initialEntries);
   const [totals, setTotals] = useState({
-    regularHours: 0,
-    overtimeHours: 0,
-    absenceHours: 0,
+    regularHours: initialValues?.regularHours || 0,
+    overtimeHours: initialValues?.overtimeHours || 0,
+    absenceHours: initialValues?.absenceHours || 0,
   });
 
   useEffect(() => {
@@ -112,7 +120,7 @@ const HoursCalculator = ({
   };
 
   return (
-    <Card className="w-full bg-white dark:bg-gray-800">
+    <Card className={`w-full bg-white dark:bg-gray-800 ${hasError ? 'border-red-500 ring-1 ring-red-500' : ''}`}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Clock className="h-5 w-5" />

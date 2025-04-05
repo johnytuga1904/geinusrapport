@@ -4,34 +4,52 @@
 
 @layer base {
   :root {
+    /* Hauptfarben */
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
 
+    /* Karten-Styling */
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
 
+    /* Popover und Dialoge */
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
 
-    --primary: 222.2 47.4% 11.2%;
+    /* Primäre Akzentfarbe - Blau */
+    --primary: 214 100% 50%;
     --primary-foreground: 210 40% 98%;
 
+    /* Sekundäre Farbe - Hellgrau */
     --secondary: 210 40% 96.1%;
     --secondary-foreground: 222.2 47.4% 11.2%;
 
+    /* Gedämpfte Farbe für weniger wichtige Elemente */
     --muted: 210 40% 96.1%;
     --muted-foreground: 215.4 16.3% 46.9%;
 
+    /* Akzentfarbe für Hervorhebungen */
     --accent: 210 40% 96.1%;
     --accent-foreground: 222.2 47.4% 11.2%;
 
+    /* Warnfarbe - Rot */
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
 
+    /* Erfolgsfarbe - Grün */
+    --success: 142 76% 36%;
+    --success-foreground: 210 40% 98%;
+
+    /* Warnfarbe - Gelb/Orange */
+    --warning: 38 92% 50%;
+    --warning-foreground: 210 40% 98%;
+
+    /* UI-Elemente */
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --ring: 214 100% 50%;
 
+    /* Abrundungen */
     --radius: 0.5rem;
   }
 }
@@ -42,7 +60,16 @@
   }
   body {
     @apply bg-background text-foreground;
-    background-color: #ffffff !important;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  }
+  h1 {
+    @apply text-2xl font-bold mb-4;
+  }
+  h2 {
+    @apply text-xl font-semibold mb-3;
+  }
+  h3 {
+    @apply text-lg font-medium mb-2;
   }
 }
 
@@ -51,6 +78,7 @@ input[type="number"] {
   -webkit-appearance: none;
   -moz-appearance: textfield;
   appearance: none;
+  text-align: center;
 }
 
 input[type="number"]::-webkit-outer-spin-button,
@@ -59,15 +87,41 @@ input[type="number"]::-webkit-inner-spin-button {
   margin: 0;
 }
 
-input[type="number"] {
-  text-align: center;
+/* Allgemeine Utility-Klassen */
+.transition-all {
+  transition: all 0.2s ease-in-out;
 }
 
-/* Test-Style */
-.test-style {
-  background-color: red !important;
-  color: white !important;
-  padding: 1rem !important;
-  margin: 1rem !important;
-  border-radius: 0.5rem !important;
+.hover-scale {
+  transition: transform 0.2s ease-in-out;
+}
+
+.hover-scale:hover {
+  transform: scale(1.02);
+}
+
+/* Verbesserte Fokus-Stile für Barrierefreiheit */
+.focus-visible:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Verbesserte Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--secondary));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.5);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.7);
 }

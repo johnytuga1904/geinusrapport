@@ -7,12 +7,14 @@ interface ObjectAutocompleteProps {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  className?: string;
 }
 
 export default function ObjectAutocomplete({
   value,
   onChange,
   placeholder = "Objekt eingeben",
+  className = "",
 }: ObjectAutocompleteProps) {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -146,7 +148,7 @@ export default function ObjectAutocomplete({
         onFocus={() => setShowSuggestions(true)}
         onBlur={handleInputBlur}
         placeholder={placeholder}
-        className="border-gray-300"
+        className={className || "border-gray-300"}
       />
       {showSuggestions && suggestions.length > 0 && (
         <div className="absolute z-10 mt-1 w-full max-h-60 overflow-auto bg-white border border-gray-300 rounded-md shadow-lg">

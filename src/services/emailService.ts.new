@@ -1,6 +1,5 @@
 import { supabase } from "@/lib/supabase";
 import { WorkReportData } from "@/types/reports";
-import { proxyService } from "./proxyService";
 
 /**
  * Interface für SMTP-Konfiguration (aus DB)
@@ -141,7 +140,7 @@ export class EmailService {
         format: format
       };
 
-      console.log(`[${new Date().toISOString()}] Preparing to invoke email function with format: ${format}`);
+      console.log(`[${new Date().toISOString()}] Invoking Supabase function 'send-email-with-attachment' with format: ${format}`);
       const payloadSize = JSON.stringify(functionPayload).length;
       console.log(`[${new Date().toISOString()}] Function Payload Size: ${payloadSize} Bytes`);
       
@@ -149,72 +148,55 @@ export class EmailService {
         console.warn(`[${new Date().toISOString()}] Payload size (${payloadSize} Bytes) is large and may exceed Supabase limits.`);
       }
 
-      // Verwende die neue Resend-basierte Funktion für bessere CORS-Kompatibilität
+      // 6. Supabase-Funktion direkt mit fetch aufrufen (Umgehung der CORS-Probleme)
       console.log(`[${new Date().toISOString()}] Invoking Supabase function with payload:`, functionPayload);
       
-      // Direkter Fetch-Ansatz mit Timeout und besserer Fehlerbehandlung
-      console.log(`[${new Date().toISOString()}] Using direct fetch to call email function`);
-      
+      // Get the URL from environment variables
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://zgwlrnfpyhhjjzdhrmhh.supabase.co';
+      
+      // Get the current session token
       const { data: { session } } = await supabase.auth.getSession();
       const supabaseKey = session?.access_token || '';
+      const functionUrl = `${supabaseUrl}/functions/v1/send-email-with-attachment`;
       
-      try {
-        // Timeout für die Fetch-Anfrage einrichten
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 Sekunden Timeout
-        
-        console.log(`[${new Date().toISOString()}] Sending request to ${supabaseUrl}/functions/v1/simple-email-sender`);
-        
-        const response = await fetch(`${supabaseUrl}/functions/v1/simple-email-sender`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${supabaseKey}`,
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({
-            to: functionPayload.to,
-            subject: functionPayload.subject,
-            text: functionPayload.text,
-            reportData: functionPayload.reportData,
-            format: functionPayload.format,
-            smtpConfig: smtpConfigPayload  // SMTP-Konfiguration hinzugefügt
-          }),
-          signal: controller.signal,
-          mode: 'cors'
-        });
-        
-        clearTimeout(timeoutId); // Timeout aufheben, wenn die Anfrage erfolgreich war
-        
-        console.log(`[${new Date().toISOString()}] Response status:`, response.status, response.statusText);
-        
-        if (!response.ok) {
-          throw new Error(`Function returned status ${response.status}: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        console.log(`[${new Date().toISOString()}] Response data:`, data);
-        
-        return {
-          success: data.success === true,
-          messageId: data.messageId || data.id || 'unknown',
-          details: data
-        };
-      } catch (error) {
-        if (error.name === 'AbortError') {
-          console.error(`[${new Date().toISOString()}] Request timed out after 30 seconds`);
-          throw new Error('Die Anfrage hat zu lange gedauert. Bitte versuchen Sie es später erneut.');
-        } else if (error.name === 'TypeError' && error.message.includes('NetworkError')) {
-          console.error(`[${new Date().toISOString()}] Network error:`, error);
-          throw new Error('Netzwerkfehler beim Senden der E-Mail. Bitte überprüfen Sie Ihre Internetverbindung.');
-        } else {
-          console.error(`[${new Date().toISOString()}] Error sending email:`, error);
-          throw new Error(`Fehler beim Senden der E-Mail: ${error.message}`);
-        }
+      console.log(`[${new Date().toISOString()}] Calling function URL: ${functionUrl}`);
+      
+      const response = await fetch(functionUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${supabaseKey}`
+        },
+        body: JSON.stringify(functionPayload),
+        mode: 'cors'
+      });
+      
+      console.log(`[${new Date().toISOString()}] Function response status:`, response.status, response.statusText);
+      
+      if (!response.ok) {
+        throw new Error(`Function returned status ${response.status}: ${response.statusText}`);
       }
       
-      // Dieser Code wird nicht mehr benötigt, da wir die Antwort direkt zurückgeben
+      const data = await response.json();
+      console.log(`[${new Date().toISOString()}] Function response data:`, data);
+      
+      // Format the response to match the expected structure
+      const result: FunctionResponse = {
+        success: data.success === true,
+        messageId: data.messageId || '',
+        error: data.error || undefined,
+        details: data.details || undefined
+      };
+
+      // 7. Erfolgsfall prüfen (falls die Funktion auch bei Status 200 einen Fehler melden könnte)
+      if (result.success === false) {
+        console.error(`[${new Date().toISOString()}] E-Mail Funktion meldete einen Fehler:`, result.error, result.details);
+        throw new Error(result.error || 'Unbekannter Fehler beim Senden der E-Mail durch die Funktion.');
+      }
+
+      console.log(`[${new Date().toISOString()}] Edge-Funktion erfolgreich aufgerufen (aus sendReport):`, result);
+      return result;
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Detaillierter Fehler im sendReport Service:`, JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
       const errorMessage = err instanceof Error ? err.message : String(err);

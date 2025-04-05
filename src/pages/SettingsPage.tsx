@@ -1,9 +1,12 @@
 import React from 'react';
-import { SMTPConfig } from '../components/SMTPConfig';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { BackToDashboardButton } from "@/components/BackToDashboardButton";
+import { Button } from "@/components/ui/button";
+import { useNavigate } from "react-router-dom";
 
 export function SettingsPage() {
+  const navigate = useNavigate();
+
   return (
     <div className="container mx-auto py-8">
       <BackToDashboardButton />
@@ -19,7 +22,13 @@ export function SettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <SMTPConfig />
+            <p className="mb-4">Hier können Sie Ihre SMTP-Konfiguration einrichten, um E-Mails direkt von Ihrem eigenen E-Mail-Konto zu versenden.</p>
+            <Button 
+              onClick={() => navigate('/settings/email')} 
+              className="w-full md:w-auto"
+            >
+              E-Mail-Einstellungen verwalten
+            </Button>
           </CardContent>
         </Card>
       </div>
