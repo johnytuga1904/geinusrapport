@@ -12,21 +12,25 @@ import { BackToDashboardButton } from "@/components/BackToDashboardButton";
 
 interface SMTPConfig {
   host: string;
-  port: string;
+  port: number | string;
   username: string;
   password: string;
-  useTLS: boolean;
-  fromEmail: string;
+  secure: boolean;
+  useTLS?: boolean; // Kompatibilität mit älteren Datensätzen
+  from_email: string;
+  fromEmail?: string; // Kompatibilität mit älteren Datensätzen
 }
 
 export function EmailSettingsPage() {
   const navigate = useNavigate();
   const [smtpConfig, setSmtpConfig] = useState<SMTPConfig>({
     host: '',
-    port: '587',
+    port: '587', // Als String initialisieren, um Typ-Konsistenz zu gewährleisten
     username: '',
     password: '',
+    secure: true,
     useTLS: true,
+    from_email: '',
     fromEmail: ''
   });
   const [loading, setLoading] = useState(false);
@@ -64,7 +68,24 @@ export function EmailSettingsPage() {
 
         if (smtpData?.smtp_config) {
           console.log('SMTP-Konfiguration geladen:', smtpData.smtp_config);
-          setSmtpConfig(smtpData.smtp_config);
+          // Stelle sicher, dass alle Felder definiert sind, um kontrollierte Eingabefelder zu gewährleisten
+          const config = smtpData.smtp_config;
+          
+          // Normalisiere die Daten, um Kompatibilität mit verschiedenen Feldnamen zu gewährleisten
+          const normalizedConfig = {
+            host: config.host || '',
+            port: config.port ? String(config.port) : '587', // Als String speichern für Konsistenz
+            username: config.username || '',
+            password: config.password || '',
+            secure: typeof config.secure === 'boolean' ? config.secure : 
+                   typeof config.useTLS === 'boolean' ? config.useTLS : true,
+            useTLS: typeof config.useTLS === 'boolean' ? config.useTLS : 
+                    typeof config.secure === 'boolean' ? config.secure : true,
+            from_email: config.from_email || config.fromEmail || '',
+            fromEmail: config.fromEmail || config.from_email || ''
+          };
+          
+          setSmtpConfig(normalizedConfig);
         }
       } catch (error) {
         console.error('Fehler beim Laden der E-Mail-Einstellungen:', error);
@@ -91,9 +112,20 @@ export function EmailSettingsPage() {
       console.log('Benutzer geladen für Update:', user.id);
 
       // Validiere die Eingaben
-      if (!smtpConfig.host || !smtpConfig.port || !smtpConfig.username || !smtpConfig.fromEmail) {
+      if (!smtpConfig.host || !smtpConfig.port || !smtpConfig.username || 
+          (!smtpConfig.from_email && !smtpConfig.fromEmail)) {
         throw new Error('Bitte füllen Sie alle erforderlichen Felder aus');
       }
+      
+      // Stelle sicher, dass wir ein einheitliches Format für die Datenbank haben
+      const normalizedConfig = {
+        host: smtpConfig.host,
+        port: typeof smtpConfig.port === 'string' ? parseInt(smtpConfig.port) || 587 : smtpConfig.port,
+        username: smtpConfig.username,
+        password: smtpConfig.password,
+        useTLS: smtpConfig.secure,
+        fromEmail: smtpConfig.from_email || smtpConfig.fromEmail
+      };
 
       // Prüfe zuerst, ob bereits Einstellungen existieren
       const { data: existingData, error: checkError } = await supabase
@@ -113,7 +145,7 @@ export function EmailSettingsPage() {
         result = await supabase
           .from('user_settings')
           .update({
-            smtp_config: smtpConfig,
+            smtp_config: normalizedConfig,
             updated_at: new Date().toISOString()
           })
           .eq('user_id', user.id)
@@ -124,7 +156,7 @@ export function EmailSettingsPage() {
           .from('user_settings')
           .insert({
             user_id: user.id,
-            smtp_config: smtpConfig,
+            smtp_config: normalizedConfig,
             updated_at: new Date().toISOString()
           })
           .select();
@@ -173,8 +205,12 @@ export function EmailSettingsPage() {
                 <Input
                   id="from-email"
                   type="email"
-                  value={smtpConfig.fromEmail}
-                  onChange={(e) => setSmtpConfig({ ...smtpConfig, fromEmail: e.target.value })}
+                  value={smtpConfig.from_email || smtpConfig.fromEmail || ''}
+                  onChange={(e) => setSmtpConfig({ 
+                    ...smtpConfig, 
+                    from_email: e.target.value,
+                    fromEmail: e.target.value 
+                  })}
                   placeholder="ihre@email.de"
                   required
                 />
@@ -195,8 +231,12 @@ export function EmailSettingsPage() {
                   <Label htmlFor="smtp-port">Port *</Label>
                   <Input
                     id="smtp-port"
-                    value={smtpConfig.port}
-                    onChange={(e) => setSmtpConfig({ ...smtpConfig, port: e.target.value })}
+                    type="text" // Ändern zu text, um Konsistenz zu gewährleisten
+                    value={smtpConfig.port || ''}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setSmtpConfig({ ...smtpConfig, port: value })
+                    }}
                     placeholder="587"
                     required
                   />
@@ -229,8 +269,12 @@ export function EmailSettingsPage() {
               <div className="flex items-center space-x-2">
                 <Switch
                   id="smtp-tls"
-                  checked={smtpConfig.useTLS}
-                  onCheckedChange={(checked) => setSmtpConfig({ ...smtpConfig, useTLS: checked })}
+                  checked={smtpConfig.secure || smtpConfig.useTLS || false}
+                  onCheckedChange={(checked) => setSmtpConfig({ 
+                    ...smtpConfig, 
+                    secure: checked,
+                    useTLS: checked 
+                  })}
                 />
                 <Label htmlFor="smtp-tls">TLS verwenden</Label>
               </div>

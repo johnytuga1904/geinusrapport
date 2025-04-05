@@ -6,12 +6,14 @@ interface LocationAutocompleteProps {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  className?: string;
 }
 
 export default function LocationAutocomplete({
   value,
   onChange,
   placeholder = "Ort eingeben",
+  className = "",
 }: LocationAutocompleteProps) {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -58,6 +60,7 @@ export default function LocationAutocomplete({
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => setShowSuggestions(true)}
         placeholder={placeholder}
+        className={className}
       />
       {showSuggestions && suggestions.length > 0 && (
         <ul className="absolute z-10 w-full bg-background border border-input rounded-md mt-1 shadow-lg max-h-60 overflow-auto">

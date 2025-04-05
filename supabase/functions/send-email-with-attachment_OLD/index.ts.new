@@ -1,0 +1,636 @@
+/// <reference lib="deno.ns" />
+/// <reference lib="deno.unstable" />
+/// <reference types="@supabase/supabase-js" />
+
+// Setup type definitions for built-in Supabase Runtime APIs
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+// @deno-types="npm:@types/nodemailer"
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import nodemailer from "npm:nodemailer@6.9.12";
+import exceljs from "npm:exceljs@4.4.0";
+
+interface DenoEnv {
+  get(key: string): string | undefined;
+}
+
+declare global {
+  const Deno: {
+    env: DenoEnv;
+    readAll(reader: Deno.Reader): Promise<Uint8Array>;
+  };
+}
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Max-Age": "86400",
+};
+
+// Interface für die JSON-Anfrage
+interface EmailRequest {
+  to: string;
+  subject: string;
+  text: string;
+  userId: string;
+  attachment?: {
+    filename: string;
+    content: string; // Base64-codierter Dateiinhalt
+    contentType?: string;
+  };
+  report?: {
+    name: string;
+    period: string;
+    entries: Array<{
+      date: string;
+      orderNumber: string;
+      object: string;
+      location: string;
+      hours: number;
+      absences: number;
+      overtime: number;
+      expenses: string;
+      expenseAmount: number;
+      notes?: string;
+    }>;
+  };
+  format?: 'excel' | 'pdf' | 'csv';
+}
+
+interface EmailAttachment {
+  filename: string;
+  content: Uint8Array;
+  contentType: string;
+}
+
+// Diese Edge-Funktion verarbeitet ausschließlich JSON!
+// Sie verwendet KEINE FormData mehr!
+serve(async (req: Request) => {
+  console.log("Edge-Funktion aufgerufen - NUR JSON Verarbeitung");
+  
+  // CORS preflight requests
+  if (req.method === "OPTIONS") {
+    console.log("CORS Preflight-Anfrage bearbeitet");
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  try {
+    // Überprüfe den Content-Type Header
+    const contentType = req.headers.get('Content-Type');
+    console.log("Content-Type:", contentType);
+    
+    if (contentType !== 'application/json') {
+      console.error("Ungültiger Content-Type:", contentType);
+      return new Response(
+        JSON.stringify({ error: "Content-Type muss 'application/json' sein" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    // Überprüfe den Authorization-Header
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) {
+      console.error("Fehlender Authorization-Header");
+      return new Response(
+        JSON.stringify({ error: "Fehlender Authorization-Header" }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    // Extrahiere den Bearer Token
+    const token = authHeader.replace('Bearer ', '');
+    if (!token) {
+      console.error("Ungültiger Authorization-Header");
+      return new Response(
+        JSON.stringify({ error: "Ungültiger Authorization-Header" }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    // Parse JSON-Anfrage
+    console.log("Versuche, JSON-Daten zu parsen...");
+    
+    const reqText = await req.text();
+    console.log("Roher Request-Body:", reqText.substring(0, 100) + "...");
+    
+    let requestData: EmailRequest;
+    try {
+      requestData = JSON.parse(reqText) as EmailRequest;
+    } catch (parseError) {
+      console.error("JSON-Parse-Fehler:", parseError);
+      return new Response(
+        JSON.stringify({ error: "Fehler beim Parsen der JSON-Daten: " + (parseError as Error).message }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+    
+    console.log("JSON-Daten erfolgreich geparst");
+    console.log("Empfangene JSON-Daten:", {
+      to: requestData.to,
+      subject: requestData.subject,
+      hasAttachment: !!requestData.attachment,
+      hasReport: !!requestData.report,
+      format: requestData.format
+    });
+
+    // Vorbereiten des Anhangs
+    let attachmentData: EmailAttachment | undefined;
+    
+    // Wenn ein direkter Anhang gesendet wurde
+    if (requestData.attachment?.content) {
+      try {
+        console.log("Decodiere Base64-Dateiinhalt aus attachment...");
+        // Stelle sicher, dass wir nur mit dem Base64-String arbeiten und keine Data-URL-Präfixe haben
+        let base64Content = requestData.attachment.content;
+        if (base64Content.includes(',')) {
+          base64Content = base64Content.split(',')[1];
+        }
+        
+        const binaryContent = Uint8Array.from(atob(base64Content), c => c.charCodeAt(0));
+        
+        attachmentData = {
+          filename: requestData.attachment.filename,
+          content: binaryContent,
+          contentType: requestData.attachment.contentType || 'application/octet-stream'
+        };
+        
+        console.log("Anhang erfolgreich decodiert:", {
+          filename: attachmentData.filename,
+          size: attachmentData.content.length,
+          contentType: attachmentData.contentType
+        });
+      } catch (error) {
+        console.error("Fehler beim Decodieren des Anhangs:", error);
+        return new Response(
+          JSON.stringify({ error: `Fehler beim Decodieren des Anhangs: ${error instanceof Error ? error.message : 'Unbekannter Fehler'}` }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          }
+        );
+      }
+    }
+    // Wenn Report-Daten gesendet wurden, generiere Excel/PDF/CSV
+    else if (requestData.report) {
+      console.log("Generiere Anhang aus Report-Daten...");
+      const format = requestData.format || 'excel';
+      const report = requestData.report;
+      
+      try {
+        if (format === 'excel') {
+          // Excel-Datei generieren
+          const workbook = new exceljs.Workbook();
+          const worksheet = workbook.addWorksheet('Arbeitsrapport');
+          
+          // Metadaten setzen
+          workbook.creator = 'RapportGenius';
+          workbook.lastModifiedBy = 'RapportGenius';
+          workbook.created = new Date();
+          workbook.modified = new Date();
+          
+          // Spaltenbreiten definieren
+          worksheet.columns = [
+            { header: 'Datum', key: 'date', width: 12 },
+            { header: 'Auftrag Nr.', key: 'orderNumber', width: 12 },
+            { header: 'Objekt oder Strasse', key: 'object', width: 25 },
+            { header: 'Ort', key: 'location', width: 15 },
+            { header: 'Std.', key: 'hours', width: 8 },
+            { header: 'Absenzen', key: 'absences', width: 10 },
+            { header: 'Überstd.', key: 'overtime', width: 10 },
+            { header: 'Auslagen und Bemerkungen', key: 'expenses', width: 25 },
+            { header: 'Auslagen Fr.', key: 'expenseAmount', width: 12 },
+            { header: 'Notizen', key: 'notes', width: 20 }
+          ];
+          
+          // Header-Zeile
+          const headerRow = worksheet.getRow(1);
+          headerRow.font = { bold: true };
+          headerRow.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFE0E0E0' }
+          };
+          
+          // Daten einfügen mit Null-Checks
+          report.entries.forEach(entry => {
+            const row = worksheet.addRow({
+              date: entry.date || '',
+              orderNumber: entry.orderNumber || '',
+              object: entry.object || '',
+              location: entry.location || '',
+              hours: entry.hours || 0,
+              absences: entry.absences || 0,
+              overtime: entry.overtime || 0,
+              expenses: entry.expenses || '',
+              expenseAmount: entry.expenseAmount || 0,
+              notes: entry.notes || ''
+            });
+            
+            // Styling für Zahlen
+            row.getCell('hours').numFmt = '0.00';
+            row.getCell('absences').numFmt = '0.00';
+            row.getCell('overtime').numFmt = '0.00';
+            row.getCell('expenseAmount').numFmt = '0.00';
+            
+            // Ausrichtung für Zahlen
+            row.getCell('hours').alignment = { horizontal: 'right' };
+            row.getCell('absences').alignment = { horizontal: 'right' };
+            row.getCell('overtime').alignment = { horizontal: 'right' };
+            row.getCell('expenseAmount').alignment = { horizontal: 'right' };
+          });
+          
+          // Leerzeile
+          worksheet.addRow({});
+          
+          // Summen berechnen mit Null-Checks
+          const totalHours = report.entries.reduce((sum, entry) => sum + (entry.hours || 0), 0);
+          const totalAbsences = report.entries.reduce((sum, entry) => sum + (entry.absences || 0), 0);
+          const totalOvertime = report.entries.reduce((sum, entry) => sum + (entry.overtime || 0), 0);
+          const totalExpenses = report.entries.reduce((sum, entry) => sum + (entry.expenseAmount || 0), 0);
+          const totalRequiredHours = totalHours + totalAbsences;
+          
+          // Summenzeile
+          const totalRow = worksheet.addRow({
+            date: 'Total',
+            orderNumber: '',
+            object: '',
+            location: '',
+            hours: totalHours,
+            absences: totalAbsences > 0 ? totalAbsences : '',
+            overtime: totalOvertime > 0 ? totalOvertime : '',
+            expenses: '',
+            expenseAmount: totalExpenses > 0 ? totalExpenses : '',
+            notes: ''
+          });
+          
+          // Styling für Summenzeile
+          totalRow.font = { bold: true };
+          totalRow.getCell('hours').numFmt = '0.00';
+          totalRow.getCell('absences').numFmt = '0.00';
+          totalRow.getCell('overtime').numFmt = '0.00';
+          totalRow.getCell('expenseAmount').numFmt = '0.00';
+          
+          totalRow.getCell('hours').alignment = { horizontal: 'right' };
+          totalRow.getCell('absences').alignment = { horizontal: 'right' };
+          totalRow.getCell('overtime').alignment = { horizontal: 'right' };
+          totalRow.getCell('expenseAmount').alignment = { horizontal: 'right' };
+          
+          // Sollstunden Zeile
+          const requiredRow = worksheet.addRow({
+            date: 'Total Sollstunden',
+            orderNumber: '',
+            object: '',
+            location: '',
+            hours: totalRequiredHours,
+            absences: '',
+            overtime: '',
+            expenses: '',
+            expenseAmount: '',
+            notes: ''
+          });
+          
+          // Styling für Sollstunden
+          requiredRow.getCell('date').font = { bold: true };
+          requiredRow.getCell('hours').font = { bold: true };
+          requiredRow.getCell('hours').numFmt = '0.00';
+          requiredRow.getCell('hours').alignment = { horizontal: 'right' };
+          
+          // Excel-Datei als Buffer zurückgeben
+          const buffer = await workbook.xlsx.writeBuffer();
+          
+          attachmentData = {
+            filename: `Arbeitsrapport_${report.name.replace(/\s+/g, '_')}_${report.period.replace(/\s+/g, '_')}.xlsx`,
+            content: new Uint8Array(buffer),
+            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          };
+        } else if (format === 'pdf') {
+          // PDF-Datei generieren
+          // Erstellen einer HTML-Tabelle mit optimierter Breite für Landscape-Orientierung
+          
+          // HTML-Tabelle erstellen mit optimierten Breiten
+          let htmlContent = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <title>Arbeitsrapport: ${report.name}</title>
+              <style>
+                @page { size: A4 landscape; margin: 1cm; }
+                body { font-family: Arial, sans-serif; margin: 20px; font-size: 10px; }
+                h1, h2 { text-align: center; }
+                table { width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }
+                th, td { border: 1px solid #ddd; padding: 4px; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+                th { background-color: #f2f2f2; }
+                .number { text-align: right; }
+                .total-row { font-weight: bold; }
+                .date-col { width: 8%; }
+                .order-col { width: 8%; }
+                .object-col { width: 15%; }
+                .location-col { width: 12%; }
+                .hours-col { width: 6%; }
+                .absences-col { width: 6%; }
+                .overtime-col { width: 6%; }
+                .expenses-col { width: 20%; }
+                .expense-amount-col { width: 8%; }
+                .notes-col { width: 11%; }
+              </style>
+            </head>
+            <body>
+              <h1>Arbeitsrapport: ${report.name}</h1>
+              <h2>Zeitraum: ${report.period}</h2>
+              
+              <table>
+                <thead>
+                  <tr>
+                    <th class="date-col">Datum</th>
+                    <th class="order-col">Auftrag Nr.</th>
+                    <th class="object-col">Objekt oder Strasse</th>
+                    <th class="location-col">Ort</th>
+                    <th class="hours-col">Std.</th>
+                    <th class="absences-col">Absenzen</th>
+                    <th class="overtime-col">Überstd.</th>
+                    <th class="expenses-col">Auslagen und Bemerkungen</th>
+                    <th class="expense-amount-col">Auslagen Fr.</th>
+                    <th class="notes-col">Notizen</th>
+                  </tr>
+                </thead>
+                <tbody>
+          `;
+          
+          // Daten einfügen mit HTML-Escaping für Sicherheit
+          const escapeHtml = (unsafe: string | undefined) => {
+            if (!unsafe) return '';
+            return unsafe
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/"/g, "&quot;")
+              .replace(/'/g, "&#039;");
+          };
+          
+          report.entries.forEach(entry => {
+            htmlContent += `
+              <tr>
+                <td class="date-col">${escapeHtml(entry.date)}</td>
+                <td class="order-col">${escapeHtml(entry.orderNumber || '')}</td>
+                <td class="object-col">${escapeHtml(entry.object || '')}</td>
+                <td class="location-col">${escapeHtml(entry.location || '')}</td>
+                <td class="hours-col number">${(entry.hours || 0).toFixed(2)}</td>
+                <td class="absences-col number">${entry.absences > 0 ? entry.absences.toFixed(2) : ''}</td>
+                <td class="overtime-col number">${entry.overtime > 0 ? entry.overtime.toFixed(2) : ''}</td>
+                <td class="expenses-col">${escapeHtml(entry.expenses || '')}</td>
+                <td class="expense-amount-col number">${entry.expenseAmount > 0 ? entry.expenseAmount.toFixed(2) : ''}</td>
+                <td class="notes-col">${escapeHtml(entry.notes || '')}</td>
+              </tr>
+            `;
+          });
+          
+          // Summen berechnen mit Null-Checks
+          const totalHours = report.entries.reduce((sum, entry) => sum + (entry.hours || 0), 0);
+          const totalAbsences = report.entries.reduce((sum, entry) => sum + (entry.absences || 0), 0);
+          const totalOvertime = report.entries.reduce((sum, entry) => sum + (entry.overtime || 0), 0);
+          const totalExpenses = report.entries.reduce((sum, entry) => sum + (entry.expenseAmount || 0), 0);
+          const totalRequiredHours = totalHours + totalAbsences;
+          
+          // Summenzeile
+          htmlContent += `
+            <tr class="total-row">
+              <td class="date-col">Total</td>
+              <td class="order-col"></td>
+              <td class="object-col"></td>
+              <td class="location-col"></td>
+              <td class="hours-col number">${totalHours.toFixed(2)}</td>
+              <td class="absences-col number">${totalAbsences > 0 ? totalAbsences.toFixed(2) : ''}</td>
+              <td class="overtime-col number">${totalOvertime > 0 ? totalOvertime.toFixed(2) : ''}</td>
+              <td class="expenses-col"></td>
+              <td class="expense-amount-col number">${totalExpenses > 0 ? totalExpenses.toFixed(2) : ''}</td>
+              <td class="notes-col"></td>
+            </tr>
+            <tr>
+              <td class="date-col">Total Sollstunden</td>
+              <td class="order-col"></td>
+              <td class="object-col"></td>
+              <td class="location-col"></td>
+              <td class="hours-col number">${totalRequiredHours.toFixed(2)}</td>
+              <td class="absences-col"></td>
+              <td class="overtime-col"></td>
+              <td class="expenses-col"></td>
+              <td class="expense-amount-col"></td>
+              <td class="notes-col"></td>
+            </tr>
+          `;
+          
+          // HTML abschließen
+          htmlContent += `
+                </tbody>
+              </table>
+            </body>
+            </html>
+          `;
+          
+          attachmentData = {
+            filename: `Arbeitsrapport_${report.name.replace(/\s+/g, '_')}_${report.period.replace(/\s+/g, '_')}.pdf`,
+            content: new TextEncoder().encode(htmlContent),
+            contentType: 'application/pdf'
+          };
+        } else if (format === 'csv') {
+          // CSV-Datei generieren
+          let csvContent = "Datum,Auftrag Nr.,Objekt oder Strasse,Ort,Std.,Absenzen,Überstd.,Auslagen und Bemerkungen,Auslagen Fr.,Notizen\n";
+          
+          report.entries.forEach((entry) => {
+            const row = [
+              entry.date || '',
+              entry.orderNumber || '',
+              entry.object || '',
+              entry.location || '',
+              (entry.hours || 0).toFixed(2).replace('.', ','),
+              (entry.absences || 0).toFixed(2).replace('.', ','),
+              (entry.overtime || 0).toFixed(2).replace('.', ','),
+              `"${(entry.expenses || '').replace(/"/g, '""')}"`,
+              (entry.expenseAmount || 0).toFixed(2).replace('.', ','),
+              `"${(entry.notes || '').replace(/"/g, '""')}"`
+            ];
+            csvContent += row.join(',') + '\n';
+          });
+          
+          // Summen berechnen mit Null-Checks
+          const totalHours = report.entries.reduce((sum, entry) => sum + (entry.hours || 0), 0);
+          const totalAbsences = report.entries.reduce((sum, entry) => sum + (entry.absences || 0), 0);
+          const totalOvertime = report.entries.reduce((sum, entry) => sum + (entry.overtime || 0), 0);
+          const totalExpenses = report.entries.reduce((sum, entry) => sum + (entry.expenseAmount || 0), 0);
+          const totalRequiredHours = totalHours + totalAbsences;
+          
+          // Summenzeile
+          csvContent += `Total,,,,${totalHours.toFixed(2).replace('.', ',')},${totalAbsences > 0 ? totalAbsences.toFixed(2).replace('.', ',') : ''},${totalOvertime > 0 ? totalOvertime.toFixed(2).replace('.', ',') : ''},,${totalExpenses > 0 ? totalExpenses.toFixed(2).replace('.', ',') : ''}\n`;
+          
+          // Sollstunden
+          csvContent += `Total Sollstunden,,,,${totalRequiredHours.toFixed(2).replace('.', ',')}\n`;
+          
+          attachmentData = {
+            filename: `Arbeitsrapport_${report.name.replace(/\s+/g, '_')}_${report.period.replace(/\s+/g, '_')}.csv`,
+            content: new TextEncoder().encode(csvContent),
+            contentType: 'text/csv;charset=utf-8'
+          };
+        }
+        
+        console.log("Anhang erfolgreich generiert:", {
+          filename: attachmentData?.filename,
+          size: attachmentData?.content.length,
+          contentType: attachmentData?.contentType
+        });
+      } catch (error) {
+        console.error("Fehler beim Generieren des Anhangs:", error);
+        return new Response(
+          JSON.stringify({ error: `Fehler beim Generieren des Anhangs: ${error instanceof Error ? error.message : 'Unbekannter Fehler'}` }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          }
+        );
+      }
+    }
+    
+    // Wenn kein Anhang oder Report vorhanden ist
+    if (!attachmentData && !requestData.attachment && !requestData.report) {
+      console.log("Kein Anhang oder Report gefunden, sende E-Mail ohne Anhang");
+    }
+
+    // Supabase Client für SMTP-Config
+    console.log("Erstelle Supabase Client für SMTP-Config...");
+    const supabaseClient = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    );
+
+    // SMTP-Einstellungen abrufen
+    console.log("Rufe SMTP-Konfiguration ab für Benutzer-ID:", requestData.userId);
+    const { data: smtpConfig, error: smtpError } = await supabaseClient
+      .from("smtp_config")
+      .select("*")
+      .eq("user_id", requestData.userId)
+      .single();
+
+    if (smtpError || !smtpConfig) {
+      console.error("SMTP-Konfiguration nicht gefunden:", smtpError);
+      return new Response(
+        JSON.stringify({ 
+          error: "SMTP-Konfiguration nicht gefunden.",
+          details: smtpError?.message 
+        }),
+        {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    console.log("SMTP-Konfiguration geladen:", { 
+      host: smtpConfig.host, 
+      port: smtpConfig.port,
+      user: smtpConfig.username ? '***' : undefined, 
+      fromEmail: smtpConfig.from_email
+    });
+
+    // E-Mail-Transporter erstellen
+    console.log("Erstelle E-Mail-Transporter...");
+    const transporter = nodemailer.createTransport({
+      host: smtpConfig.host,
+      port: smtpConfig.port,
+      secure: smtpConfig.secure,
+      auth: {
+        user: smtpConfig.username,
+        pass: smtpConfig.password,
+      },
+    });
+
+    // E-Mail-Optionen vorbereiten
+    const mailOptions: nodemailer.SendMailOptions = {
+      from: smtpConfig.from_email,
+      to: requestData.to,
+      subject: requestData.subject,
+      text: requestData.text,
+    };
+    
+    // Anhang hinzufügen, wenn vorhanden
+    if (attachmentData) {
+      mailOptions.attachments = [
+        {
+          filename: attachmentData.filename,
+          content: attachmentData.content,
+          contentType: attachmentData.contentType
+        }
+      ];
+    }
+
+    console.log("Sende E-Mail:", {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject,
+      hasAttachment: !!mailOptions.attachments,
+      attachmentName: mailOptions.attachments?.[0]?.filename,
+      attachmentType: mailOptions.attachments?.[0]?.contentType,
+      attachmentSize: mailOptions.attachments?.[0]?.content instanceof Uint8Array ? mailOptions.attachments[0].content.length : 'unbekannt'
+    });
+
+    try {
+      console.log("Rufe sendMail auf...");
+      const info = await transporter.sendMail(mailOptions);
+      console.log("E-Mail erfolgreich gesendet:", info.messageId);
+
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          messageId: info.messageId,
+          message: "E-Mail erfolgreich gesendet"
+        }),
+        { 
+          headers: { 
+            ...corsHeaders, 
+            "Content-Type": "application/json" 
+          } 
+        }
+      );
+    } catch (sendError: any) {
+      console.error("Fehler beim Senden der E-Mail:", sendError);
+      return new Response(
+        JSON.stringify({ 
+          error: `Fehler beim Senden der E-Mail: ${sendError.message}`,
+          details: sendError.stack
+        }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error("Allgemeiner Fehler beim Senden der E-Mail:", err);
+    return new Response(
+      JSON.stringify({ 
+        error: err.message,
+        details: err.stack
+      }),
+      {
+        status: 500,
+        headers: { 
+          ...corsHeaders, 
+          "Content-Type": "application/json" 
+        },
+      }
+    );
+  }
+});

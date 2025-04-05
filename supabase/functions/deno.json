@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "strict": true,
+    "lib": ["deno.window"],
+    "types": ["https://deno.land/x/smtp@v0.7.0/mod.ts"]
+  },
+  "importMap": "./import_map.json"
+}

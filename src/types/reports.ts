@@ -1,5 +1,30 @@
 // Gemeinsame Typdefinitionen für Reports
 
+// Definition für einen Arbeitsrapport-Eintrag
+export interface WorkReportEntry {
+  date: Date | string;
+  orderNumber: string;
+  object: string;
+  location: string;
+  hours: number;
+  absences: number;
+  overtime: number;
+  expenses: string;
+  expenseAmount: number;
+  notes?: string;
+}
+
+// Definition für die Arbeitsrapport-Daten
+export interface WorkReportData {
+  client: string; // Kunde hinzugefügt
+  month: string; // Monat hinzugefügt (ersetzt period)
+  year: string; // Jahr hinzugefügt (ersetzt period)
+  employeeName: string; // Umbenannt von name
+  totalHours: number; // Gesamtstunden hinzugefügt (könnte optional sein)
+  date?: string;
+  entries: WorkReportEntry[];
+}
+
 // Basistyp für gespeicherte Berichte
 export interface BaseSavedReport {
   id: string;
@@ -26,7 +51,7 @@ export interface DatabaseSavedReport extends BaseSavedReport {
 
 // Typ für lokal gespeicherte Berichte (WorkReportPage)
 export interface LocalSavedReport extends BaseSavedReport {
-  entries: any[];
+  entries: WorkReportEntry[];
 }
 
 // Vereinigungstyp für beide Report-Typen

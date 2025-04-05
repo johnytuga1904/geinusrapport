@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"],
+    "strict": true
+  },
+  "importMap": "./import_map.json",
+  "tasks": {
+    "start": "deno run --allow-net --allow-env index.ts",
+    "deploy": "supabase functions deploy send-email-with-attachment"
+  },
+  "lint": {
+    "files": {
+      "exclude": ["node_modules/"]
+    }
+  },
+  "fmt": {
+    "files": {
+      "exclude": ["node_modules/"]
+    }
+  }
+} 
